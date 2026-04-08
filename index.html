@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>テキスト比較ツール</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/7.0.0/diff.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #ffffff;
+            color: #333;
+        }
+        h1 {
+            font-size: 24px;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        /* 左右分割レイアウト */
+        .flex-container {
+            display: flex;
+            gap: 15px;
+            width: 100%;
+            margin-bottom: 15px;
+        }
+        .pane {
+            flex: 1;
+            width: 50%;
+            display: flex;
+            flex-direction: column;
+        }
+        .pane-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-bottom: none;
+        }
+        textarea {
+            width: 100%;
+            height: 250px;
+            padding: 10px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            box-sizing: border-box;
+            resize: vertical;
+            font-family: monospace;
+        }
+        /* コントロールバー */
+        .controls {
+            text-align: center;
+            background-color: #f0f0f0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            margin-bottom: 20px;
+        }
+        .controls label {
+            margin: 0 10px;
+            font-size: 15px;
+            cursor: pointer;
+        }
+        button {
+            margin-left: 20px;
+            padding: 8px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        /* 結果表示エリア */
+        .result-pane {
+            flex: 1;
+            border: 1px solid #bbb;
+            padding: 15px;
+            min-height: 250px;
+            white-space: pre-wrap; /* 改行を保持 */
+            word-wrap: break-word;
+            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            background-color: #fafafa;
+            overflow-x: auto;
+        }
+        /* ハイライト色（本家準拠） */
+        .del {
+            background-color: #cceeff; /* 左側：削除部分（水色） */
+            text-decoration: line-through;
+        }
+        .ins {
+            background-color: #ccffcc; /* 右側：追加部分（薄緑） */
+            font-weight: bold;
+        }
+        .char-count {
+            font-size: 12px;
+            color: #888;
+            font-weight: normal;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="flex-container">
+        <div class="pane">
+            <div class="pane-header">
+                <span>元のテキスト (変更前)</span>
+                <span id="old-count" class="char-count"></span>
+            </div>
+            <textarea id="text-old" placeholder="ここに元のテキストを入力..."></textarea>
+        </div>
+        <div class="pane">
+            <div class="pane-header">
+                <span>新しいテキスト (変更後)</span>
+                <span id="new-count" class="char-count"></span>
+            </div>
+            <textarea id="text-new" placeholder="ここに新しいテキストを入力..."></textarea>
+        </div>
+    </div>
+
+    <div class="controls">
+        <b>比較モード:</b>
+        <label><input type="radio" name="mode" value="char" checked> 文字単位</label>
+        <label><input type="radio" name="mode" value="word"> 単語単位</label>
+        <label><input type="radio" name="mode" value="line"> 行単位</label>
+        
+        <button onclick="compareText()">比較する</button>
+    </div>
+
+    <div class="flex-container" id="result-container" style="display: none;">
+        <div class="pane">
+            <div class="pane-header">変更前（削除された部分）</div>
+            <div id="result-old" class="result-pane"></div>
+        </div>
+        <div class="pane">
+            <div class="pane-header">変更後（追加された部分）</div>
+            <div id="result-new" class="result-pane"></div>
+        </div>
+    </div>
+
+    <script>
+        function compareText() {
+            const textOld = document.getElementById('text-old').value;
+            const textNew = document.getElementById('text-new').value;
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+
+            // 文字数を表示
+            document.getElementById('old-count').innerText = `${textOld.length}文字`;
+            document.getElementById('new-count').innerText = `${textNew.length}文字`;
+
+            // モードに応じてDiffの関数を切り替え
+            let diff;
+            if (mode === 'char') {
+                diff = Diff.diffChars(textOld, textNew);
+            } else if (mode === 'word') {
+                diff = Diff.diffWords(textOld, textNew);
+            } else if (mode === 'line') {
+                diff = Diff.diffLines(textOld, textNew);
+            }
+
+            let htmlOld = '';
+            let htmlNew = '';
+
+            // 差分データを解析して左右それぞれのHTMLを生成
+            diff.forEach((part) => {
+                // XSS対策
+                const escapedValue = part.value
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+
+                if (part.added) {
+                    // 追加された部分は右側（新しいテキスト）にのみ表示
+                    htmlNew += `<span class="ins">${escapedValue}</span>`;
+                } else if (part.removed) {
+                    // 削除された部分は左側（元のテキスト）にのみ表示
+                    htmlOld += `<span class="del">${escapedValue}</span>`;
+                } else {
+                    // 変更がない部分は両方に表示
+                    htmlOld += escapedValue;
+                    htmlNew += escapedValue;
+                }
+            });
+
+            // 結果を画面に出力し、表示エリアをオンにする
+            document.getElementById('result-old').innerHTML = htmlOld;
+            document.getElementById('result-new').innerHTML = htmlNew;
+            document.getElementById('result-container').style.display = 'flex';
+        }
+    </script>
+
+</body>
+</html>
