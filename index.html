@@ -10,6 +10,8 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
             padding: 20px;
+            /* 右側にバーを表示するため、右の余白を少し広めに確保 */
+            padding-right: 40px; 
             background-color: #ffffff;
             color: #333;
         }
@@ -106,6 +108,39 @@
             color: #888;
             font-weight: normal;
         }
+
+        /* ----- ナビゲーションバー（ミニマップ） ----- */
+        .minimap {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 40px;           /* 広がらないように固定幅に変更 */
+            height: 100vh;         /* 画面全体の高さ */
+            background-color: rgba(240, 240, 240, 0.7);
+            border-left: 1px solid #ccc;
+            z-index: 1000;
+            cursor: pointer;
+            box-shadow: -2px 0 5px rgba(0,0,0,0.05);
+        }
+        /* 広がるアニメーション(.minimap:hover)を削除しました */
+
+        .minimap-marker {
+            position: absolute;
+            left: 0;
+            width: 100%;
+            min-height: 3px;       /* どんなに小さくても3pxは確保 */
+            opacity: 0.8;
+        }
+        .minimap-marker:hover {
+            opacity: 1;
+        }
+        /* マーカーの色 */
+        .minimap-marker.del-marker {
+            background-color: #4da6ff; /* 水色（削除） */
+        }
+        .minimap-marker.ins-marker {
+            background-color: #33cc33; /* 緑（追加） */
+        }
     </style>
 </head>
 <body>
@@ -147,6 +182,8 @@
         </div>
     </div>
 
+    <div id="minimap" class="minimap" style="display: none;"></div>
+
     <script>
         function compareText() {
             const textOld = document.getElementById('text-old').value;
@@ -172,31 +209,89 @@
 
             // 差分データを解析して左右それぞれのHTMLを生成
             diff.forEach((part) => {
-                // XSS対策
                 const escapedValue = part.value
                     .replace(/&/g, "&amp;")
                     .replace(/</g, "&lt;")
                     .replace(/>/g, "&gt;");
 
                 if (part.added) {
-                    // 追加された部分は右側（新しいテキスト）にのみ表示
                     htmlNew += `<span class="ins">${escapedValue}</span>`;
                 } else if (part.removed) {
-                    // 削除された部分は左側（元のテキスト）にのみ表示
                     htmlOld += `<span class="del">${escapedValue}</span>`;
                 } else {
-                    // 変更がない部分は両方に表示
                     htmlOld += escapedValue;
                     htmlNew += escapedValue;
                 }
             });
 
-            // 結果を画面に出力し、表示エリアをオンにする
+            // 結果を出力
             document.getElementById('result-old').innerHTML = htmlOld;
             document.getElementById('result-new').innerHTML = htmlNew;
             document.getElementById('result-container').style.display = 'flex';
-        }
-    </script>
+            document.getElementById('minimap').style.display = 'block';
 
+            // レンダリング完了後にミニマップを更新
+            setTimeout(drawMinimap, 100);
+        }
+
+        function drawMinimap() {
+            const minimap = document.getElementById('minimap');
+            minimap.innerHTML = ''; // 既存のマーカーをクリア
+
+            // ページ全体の高さ（スクロール領域含む）
+            const pageHeight = document.documentElement.scrollHeight;
+            
+            // マーカーを生成するヘルパー関数
+            const createMarkers = (selector, markerClass) => {
+                document.querySelectorAll(selector).forEach(el => {
+                    const rect = el.getBoundingClientRect();
+                    // 要素の絶対的なY座標
+                    const absoluteTop = rect.top + window.scrollY;
+                    
+                    // ページ全体に対する位置と高さの割合（％）を計算
+                    const topPercent = (absoluteTop / pageHeight) * 100;
+                    const heightPercent = (rect.height / pageHeight) * 100;
+
+                    const marker = document.createElement('div');
+                    marker.className = `minimap-marker ${markerClass}`;
+                    marker.style.top = `${topPercent}%`;
+                    marker.style.height = `${Math.max(heightPercent, 0.2)}%`; // 最低限の太さを確保
+
+                    // マーカーをクリックしたらその位置までスムーズスクロール
+                    marker.onclick = (e) => {
+                        e.stopPropagation(); // minimap自体のクリックイベント発火を防ぐ
+                        window.scrollTo({ 
+                            top: absoluteTop - 100, // 上部に少し余白(100px)を持たせてスクロール
+                            behavior: 'smooth' 
+                        });
+                    };
+
+                    minimap.appendChild(marker);
+                });
+            };
+
+            // 削除部分(左)と追加部分(右)のマーカーを作成
+            createMarkers('#result-old .del', 'del-marker');
+            createMarkers('#result-new .ins', 'ins-marker');
+
+            // ミニマップの空白部分をクリックした時も、その位置の割合に応じてスクロールする
+            minimap.onclick = (e) => {
+                const clickY = e.clientY;
+                const windowHeight = window.innerHeight;
+                const scrollTarget = (clickY / windowHeight) * pageHeight;
+                window.scrollTo({
+                    top: scrollTarget - (windowHeight / 2), // クリックした位置が画面中央に来るように
+                    behavior: 'smooth'
+                });
+            };
+        }
+
+        // ウィンドウサイズが変わると要素の位置がズレるため、リサイズ時にミニマップを再描画
+        window.addEventListener('resize', () => {
+            if (document.getElementById('result-container').style.display !== 'none') {
+                drawMinimap();
+            }
+        });
+    </script>
 </body>
 </html>
