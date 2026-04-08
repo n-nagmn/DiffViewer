@@ -20,7 +20,7 @@
 5. 比較モード（文字・単語・行）を選択します（日本語の文章には「文字単位」がおすすめです）。
 6. 「**比較する**」ボタンをクリックすると、下部に差分結果が表示されます。
 
-## 🛠 使用技術 (Technologies)
+## 使用技術 (Technologies)
 
 * **HTML / CSS / Vanilla JavaScript**: UIと基本的なロジックの構築。
 * **[jsdiff](https://github.com/kpdecker/jsdiff)** (v7.0.0): 高精度なテキスト差分解析ライブラリ。CDN経由で読み込んで使用しています。
