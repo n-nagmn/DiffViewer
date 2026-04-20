@@ -10,7 +10,6 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
             padding: 20px;
-            /* 右側にバーを表示するため、右の余白を少し広めに確保 */
             padding-right: 40px; 
             background-color: #ffffff;
             color: #333;
@@ -26,7 +25,6 @@
             margin-bottom: 20px;
             font-size: 14px;
         }
-        /* 左右分割レイアウト */
         .flex-container {
             display: flex;
             gap: 15px;
@@ -60,7 +58,6 @@
             resize: vertical;
             font-family: monospace;
         }
-        /* コントロールバー */
         .controls {
             text-align: center;
             background-color: #f0f0f0;
@@ -80,13 +77,12 @@
             font-weight: bold;
             cursor: pointer;
         }
-        /* 結果表示エリア */
         .result-pane {
             flex: 1;
             border: 1px solid #bbb;
             padding: 15px;
             min-height: 250px;
-            white-space: pre-wrap; /* 改行を保持 */
+            white-space: pre-wrap;
             word-wrap: break-word;
             font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
             font-size: 14px;
@@ -94,13 +90,12 @@
             background-color: #fafafa;
             overflow-x: auto;
         }
-        /* ハイライト色（本家準拠） */
         .del {
-            background-color: #cceeff; /* 左側：削除部分（水色） */
+            background-color: #cceeff;
             text-decoration: line-through;
         }
         .ins {
-            background-color: #ccffcc; /* 右側：追加部分（薄緑） */
+            background-color: #ccffcc;
             font-weight: bold;
         }
         .char-count {
@@ -108,38 +103,33 @@
             color: #888;
             font-weight: normal;
         }
-
-        /* ----- ナビゲーションバー（ミニマップ） ----- */
         .minimap {
             position: fixed;
             top: 0;
             right: 0;
-            width: 40px;           /* 広がらないように固定幅に変更 */
-            height: 100vh;         /* 画面全体の高さ */
+            width: 40px;
+            height: 100vh;
             background-color: rgba(240, 240, 240, 0.7);
             border-left: 1px solid #ccc;
             z-index: 1000;
             cursor: pointer;
             box-shadow: -2px 0 5px rgba(0,0,0,0.05);
         }
-        /* 広がるアニメーション(.minimap:hover)を削除しました */
-
         .minimap-marker {
             position: absolute;
             left: 0;
             width: 100%;
-            min-height: 3px;       /* どんなに小さくても3pxは確保 */
+            min-height: 3px;
             opacity: 0.8;
         }
         .minimap-marker:hover {
             opacity: 1;
         }
-        /* マーカーの色 */
         .minimap-marker.del-marker {
-            background-color: #4da6ff; /* 水色（削除） */
+            background-color: #4da6ff;
         }
         .minimap-marker.ins-marker {
-            background-color: #33cc33; /* 緑（追加） */
+            background-color: #33cc33;
         }
     </style>
 </head>
@@ -190,103 +180,143 @@
             const textNew = document.getElementById('text-new').value;
             const mode = document.querySelector('input[name="mode"]:checked').value;
 
-            // 文字数を表示
             document.getElementById('old-count').innerText = `${textOld.length}文字`;
             document.getElementById('new-count').innerText = `${textNew.length}文字`;
 
-            // モードに応じてDiffの関数を切り替え
-            let diff;
-            if (mode === 'char') {
-                diff = Diff.diffChars(textOld, textNew);
-            } else if (mode === 'word') {
-                diff = Diff.diffWords(textOld, textNew);
-            } else if (mode === 'line') {
-                diff = Diff.diffLines(textOld, textNew);
+            const escapeHtml = (str) => {
+                return str.replace(/&/g, "&amp;")
+                          .replace(/</g, "&lt;")
+                          .replace(/>/g, "&gt;");
+            };
+
+            // 1. まず「行単位」で差分を取り、全体のレイアウト（高さ）を揃えるベースを作る
+            const lineDiff = Diff.diffLines(textOld, textNew);
+
+            let blocks = [];
+            let currentBlock = { old: '', new: '' };
+
+            // 変更行をブロックとしてグループ化
+            lineDiff.forEach((part) => {
+                if (part.added) {
+                    currentBlock.new += part.value;
+                } else if (part.removed) {
+                    currentBlock.old += part.value;
+                } else {
+                    if (currentBlock.old || currentBlock.new) {
+                        blocks.push(currentBlock);
+                        currentBlock = { old: '', new: '' };
+                    }
+                    blocks.push({ common: part.value });
+                }
+            });
+            if (currentBlock.old || currentBlock.new) {
+                blocks.push(currentBlock);
             }
 
             let htmlOld = '';
             let htmlNew = '';
 
-            // 差分データを解析して左右それぞれのHTMLを生成
-            diff.forEach((part) => {
-                const escapedValue = part.value
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;");
-
-                if (part.added) {
-                    htmlNew += `<span class="ins">${escapedValue}</span>`;
-                } else if (part.removed) {
-                    htmlOld += `<span class="del">${escapedValue}</span>`;
+            // 2. ブロックごとにHTMLを生成し、必要に応じて行内で文字・単語Diffを実行
+            blocks.forEach(block => {
+                if (block.common !== undefined) {
+                    // 変更がない共通部分はそのまま出力
+                    const escaped = escapeHtml(block.common);
+                    htmlOld += escaped;
+                    htmlNew += escaped;
                 } else {
-                    htmlOld += escapedValue;
-                    htmlNew += escapedValue;
+                    // 変更があったブロック（左と右で行数が異なる可能性がある部分）
+                    let oldText = block.old;
+                    let newText = block.new;
+
+                    // 行数をカウントして足りない分を計算
+                    const oldLines = (oldText.match(/\n/g) || []).length;
+                    const newLines = (newText.match(/\n/g) || []).length;
+                    const paddingLines = Math.abs(oldLines - newLines);
+                    const padding = '\n'.repeat(paddingLines);
+
+                    let oldHtmlChunk = '';
+                    let newHtmlChunk = '';
+
+                    // 文字・単語モードなら、このブロックの内部だけで詳細なDiffを行う
+                    if (mode === 'char' || mode === 'word') {
+                        let subDiff = mode === 'char' 
+                            ? Diff.diffChars(oldText, newText) 
+                            : Diff.diffWords(oldText, newText);
+
+                        subDiff.forEach(subPart => {
+                            const escaped = escapeHtml(subPart.value);
+                            if (subPart.added) {
+                                newHtmlChunk += `<span class="ins">${escaped}</span>`;
+                            } else if (subPart.removed) {
+                                oldHtmlChunk += `<span class="del">${escaped}</span>`;
+                            } else {
+                                oldHtmlChunk += escaped;
+                                newHtmlChunk += escaped;
+                            }
+                        });
+                    } else {
+                        // 行モードの場合はブロック全体をハイライト
+                        if (oldText) oldHtmlChunk = `<span class="del">${escapeHtml(oldText)}</span>`;
+                        if (newText) newHtmlChunk = `<span class="ins">${escapeHtml(newText)}</span>`;
+                    }
+
+                    // ブロックの「最後に」不足分の改行を追加して高さを合わせる（途中で改行させない）
+                    htmlOld += oldHtmlChunk + (oldLines < newLines ? padding : '');
+                    htmlNew += newHtmlChunk + (newLines < oldLines ? padding : '');
                 }
             });
 
-            // 結果を出力
             document.getElementById('result-old').innerHTML = htmlOld;
             document.getElementById('result-new').innerHTML = htmlNew;
             document.getElementById('result-container').style.display = 'flex';
             document.getElementById('minimap').style.display = 'block';
 
-            // レンダリング完了後にミニマップを更新
             setTimeout(drawMinimap, 100);
         }
 
         function drawMinimap() {
             const minimap = document.getElementById('minimap');
-            minimap.innerHTML = ''; // 既存のマーカーをクリア
+            minimap.innerHTML = '';
 
-            // ページ全体の高さ（スクロール領域含む）
             const pageHeight = document.documentElement.scrollHeight;
             
-            // マーカーを生成するヘルパー関数
             const createMarkers = (selector, markerClass) => {
                 document.querySelectorAll(selector).forEach(el => {
                     const rect = el.getBoundingClientRect();
-                    // 要素の絶対的なY座標
                     const absoluteTop = rect.top + window.scrollY;
-                    
-                    // ページ全体に対する位置と高さの割合（％）を計算
                     const topPercent = (absoluteTop / pageHeight) * 100;
                     const heightPercent = (rect.height / pageHeight) * 100;
 
                     const marker = document.createElement('div');
                     marker.className = `minimap-marker ${markerClass}`;
                     marker.style.top = `${topPercent}%`;
-                    marker.style.height = `${Math.max(heightPercent, 0.2)}%`; // 最低限の太さを確保
+                    marker.style.height = `${Math.max(heightPercent, 0.2)}%`;
 
-                    // マーカーをクリックしたらその位置までスムーズスクロール
                     marker.onclick = (e) => {
-                        e.stopPropagation(); // minimap自体のクリックイベント発火を防ぐ
+                        e.stopPropagation();
                         window.scrollTo({ 
-                            top: absoluteTop - 100, // 上部に少し余白(100px)を持たせてスクロール
+                            top: absoluteTop - 100, 
                             behavior: 'smooth' 
                         });
                     };
-
                     minimap.appendChild(marker);
                 });
             };
 
-            // 削除部分(左)と追加部分(右)のマーカーを作成
             createMarkers('#result-old .del', 'del-marker');
             createMarkers('#result-new .ins', 'ins-marker');
 
-            // ミニマップの空白部分をクリックした時も、その位置の割合に応じてスクロールする
             minimap.onclick = (e) => {
                 const clickY = e.clientY;
                 const windowHeight = window.innerHeight;
                 const scrollTarget = (clickY / windowHeight) * pageHeight;
                 window.scrollTo({
-                    top: scrollTarget - (windowHeight / 2), // クリックした位置が画面中央に来るように
+                    top: scrollTarget - (windowHeight / 2),
                     behavior: 'smooth'
                 });
             };
         }
 
-        // ウィンドウサイズが変わると要素の位置がズレるため、リサイズ時にミニマップを再描画
         window.addEventListener('resize', () => {
             if (document.getElementById('result-container').style.display !== 'none') {
                 drawMinimap();
