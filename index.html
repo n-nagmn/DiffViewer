@@ -19,12 +19,6 @@
             text-align: center;
             margin-bottom: 5px;
         }
-        .subtitle {
-            text-align: center;
-            color: #666;
-            margin-bottom: 20px;
-            font-size: 14px;
-        }
         .flex-container {
             display: flex;
             gap: 15px;
@@ -50,7 +44,7 @@
         }
         textarea {
             width: 100%;
-            height: 250px;
+            height: 300px;
             padding: 10px;
             font-size: 14px;
             border: 1px solid #ddd;
@@ -77,32 +71,13 @@
             font-weight: bold;
             cursor: pointer;
         }
-        .result-pane {
-            flex: 1;
-            border: 1px solid #bbb;
-            padding: 15px;
-            min-height: 250px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-            font-size: 14px;
-            line-height: 1.5;
-            background-color: #fafafa;
-            overflow-x: auto;
-        }
-        .del {
-            background-color: #cceeff;
-            text-decoration: line-through;
-        }
-        .ins {
-            background-color: #ccffcc;
-            font-weight: bold;
-        }
         .char-count {
             font-size: 12px;
             color: #888;
             font-weight: normal;
         }
+        
+        /* ミニマップ */
         .minimap {
             position: fixed;
             top: 0;
@@ -131,6 +106,53 @@
         .minimap-marker.ins-marker {
             background-color: #33cc33;
         }
+
+        /* 差分ハイライト */
+        .del {
+            background-color: #cceeff;
+            text-decoration: line-through;
+        }
+        .ins {
+            background-color: #ccffcc;
+            font-weight: bold;
+        }
+
+        /* 新しい結果表示エリア（行同期対応） */
+        .result-pane {
+            flex: 1;
+            border: 1px solid #bbb;
+            min-height: 250px;
+            background-color: #fafafa;
+            overflow-x: auto;
+            tab-size: 4;
+        }
+        .diff-row {
+            display: flex;
+            width: 100%;
+            border-bottom: 1px dashed #ddd; /* 左右の高さを同期するための行区切り */
+        }
+        .diff-row:last-child {
+            border-bottom: none;
+        }
+        .diff-cell {
+            flex: 1;
+            width: 50%;
+            padding: 2px 15px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            box-sizing: border-box;
+            font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .diff-cell.left-cell {
+            border-right: 1px solid #bbb;
+        }
+        .newline-symbol {
+            color: #aaa;
+            font-size: 0.9em;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
@@ -157,117 +179,138 @@
         <label><input type="radio" name="mode" value="char" checked> 文字単位</label>
         <label><input type="radio" name="mode" value="word"> 単語単位</label>
         <label><input type="radio" name="mode" value="line"> 行単位</label>
-        
+        <button onclick="swapTexts()">左右を入れ替える</button>
         <button onclick="compareText()">比較する</button>
     </div>
 
-    <div class="flex-container" id="result-container" style="display: none;">
-        <div class="pane">
-            <div class="pane-header">変更前（削除された部分）</div>
-            <div id="result-old" class="result-pane"></div>
+    <div id="result-container" style="display: none; flex-direction: column; margin-bottom: 20px;">
+        <div class="flex-container" style="margin-bottom: 0;">
+            <div class="pane" style="border: none; background: transparent; padding-bottom: 0;">
+                <div class="pane-header">変更前（削除された部分）</div>
+            </div>
+            <div class="pane" style="border: none; background: transparent; padding-bottom: 0;">
+                <div class="pane-header">変更後（追加された部分）</div>
+            </div>
         </div>
-        <div class="pane">
-            <div class="pane-header">変更後（追加された部分）</div>
-            <div id="result-new" class="result-pane"></div>
-        </div>
+        <div id="unified-result" class="result-pane" style="display: flex; flex-direction: column; padding: 0;">
+            </div>
     </div>
 
     <div id="minimap" class="minimap" style="display: none;"></div>
 
     <script>
         function compareText() {
-            const textOld = document.getElementById('text-old').value;
-            const textNew = document.getElementById('text-new').value;
+            // 改行コードの違いを \n に統一
+            const textOld = document.getElementById('text-old').value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            const textNew = document.getElementById('text-new').value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
             const mode = document.querySelector('input[name="mode"]:checked').value;
 
             document.getElementById('old-count').innerText = `${textOld.length}文字`;
             document.getElementById('new-count').innerText = `${textNew.length}文字`;
 
             const escapeHtml = (str) => {
-                return str.replace(/&/g, "&amp;")
-                          .replace(/</g, "&lt;")
-                          .replace(/>/g, "&gt;");
+                return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
             };
 
-            // 1. まず「行単位」で差分を取り、全体のレイアウト（高さ）を揃えるベースを作る
-            const lineDiff = Diff.diffLines(textOld, textNew);
-
-            let blocks = [];
-            let currentBlock = { old: '', new: '' };
-
-            // 変更行をブロックとしてグループ化
-            lineDiff.forEach((part) => {
-                if (part.added) {
-                    currentBlock.new += part.value;
-                } else if (part.removed) {
-                    currentBlock.old += part.value;
-                } else {
-                    if (currentBlock.old || currentBlock.new) {
-                        blocks.push(currentBlock);
-                        currentBlock = { old: '', new: '' };
+            // 【1】difff純正のトークン化アルゴリズム
+            const tokenize = (text, mode) => {
+                if (mode === 'line') {
+                    const result = [];
+                    let current = '';
+                    for (let i = 0; i < text.length; i++) {
+                        current += text[i];
+                        if (text[i] === '\n') {
+                            result.push(current);
+                            current = '';
+                        }
                     }
-                    blocks.push({ common: part.value });
+                    if (current !== '') result.push(current);
+                    return result;
+                } else if (mode === 'char') {
+                    return text.split('');
+                } else {
+                    const tokens = [];
+                    const regex = /([a-zA-Z0-9]+|\n|[^a-zA-Z0-9\n])/g;
+                    let match;
+                    while ((match = regex.exec(text)) !== null) {
+                        tokens.push(match[0]);
+                    }
+                    return tokens;
                 }
+            };
+
+            const oldTokens = tokenize(textOld, mode);
+            const newTokens = tokenize(textNew, mode);
+
+            // 【2】jsdiffを使ってトークン同士を比較
+            const diffResult = Diff.diffArrays(oldTokens, newTokens);
+
+            // 【3】改行を検知して左右の行を同期させる
+            let leftRows = [];
+            let rightRows = [];
+            let currentLeft = '';
+            let currentRight = '';
+
+            diffResult.forEach(part => {
+                part.value.forEach(token => {
+                    const subTokens = token.split(/(\n)/); 
+
+                    subTokens.forEach(subToken => {
+                        if (subToken === '\n') {
+                            if (part.added) {
+                                rightRows.push(currentRight); currentRight = '';
+                                leftRows.push(currentLeft);   currentLeft = '';
+                            } else if (part.removed) {
+                                leftRows.push(currentLeft);   currentLeft = '';
+                                rightRows.push(currentRight); currentRight = '';
+                            } else {
+                                leftRows.push(currentLeft);   currentLeft = '';
+                                rightRows.push(currentRight); currentRight = '';
+                            }
+                        } else if (subToken !== '') {
+                            const escaped = escapeHtml(subToken);
+                            let html = '';
+                            
+                            if (part.added) {
+                                html = `<span class="ins">${escaped}</span>`;
+                                currentRight += html;
+                            } else if (part.removed) {
+                                html = `<span class="del">${escaped}</span>`;
+                                currentLeft += html;
+                            } else {
+                                html = escaped;
+                                currentLeft += html;
+                                currentRight += html;
+                            }
+                        }
+                    });
+                });
             });
-            if (currentBlock.old || currentBlock.new) {
-                blocks.push(currentBlock);
+
+            leftRows.push(currentLeft);
+            rightRows.push(currentRight);
+
+            // 【4】HTMLの行ブロックとして出力
+            const resultContainer = document.getElementById('unified-result');
+            resultContainer.innerHTML = ''; 
+
+            for (let i = 0; i < leftRows.length; i++) {
+                const row = document.createElement('div');
+                row.className = 'diff-row';
+
+                const leftCell = document.createElement('div');
+                leftCell.className = 'diff-cell left-cell';
+                leftCell.innerHTML = leftRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : leftRows[i];
+
+                const rightCell = document.createElement('div');
+                rightCell.className = 'diff-cell right-cell';
+                rightCell.innerHTML = rightRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : rightRows[i];
+
+                row.appendChild(leftCell);
+                row.appendChild(rightCell);
+                resultContainer.appendChild(row);
             }
 
-            let htmlOld = '';
-            let htmlNew = '';
-
-            // 2. ブロックごとにHTMLを生成し、必要に応じて行内で文字・単語Diffを実行
-            blocks.forEach(block => {
-                if (block.common !== undefined) {
-                    // 変更がない共通部分はそのまま出力
-                    const escaped = escapeHtml(block.common);
-                    htmlOld += escaped;
-                    htmlNew += escaped;
-                } else {
-                    // 変更があったブロック（左と右で行数が異なる可能性がある部分）
-                    let oldText = block.old;
-                    let newText = block.new;
-
-                    // 行数をカウントして足りない分を計算
-                    const oldLines = (oldText.match(/\n/g) || []).length;
-                    const newLines = (newText.match(/\n/g) || []).length;
-                    const paddingLines = Math.abs(oldLines - newLines);
-                    const padding = '\n'.repeat(paddingLines);
-
-                    let oldHtmlChunk = '';
-                    let newHtmlChunk = '';
-
-                    // 文字・単語モードなら、このブロックの内部だけで詳細なDiffを行う
-                    if (mode === 'char' || mode === 'word') {
-                        let subDiff = mode === 'char' 
-                            ? Diff.diffChars(oldText, newText) 
-                            : Diff.diffWords(oldText, newText);
-
-                        subDiff.forEach(subPart => {
-                            const escaped = escapeHtml(subPart.value);
-                            if (subPart.added) {
-                                newHtmlChunk += `<span class="ins">${escaped}</span>`;
-                            } else if (subPart.removed) {
-                                oldHtmlChunk += `<span class="del">${escaped}</span>`;
-                            } else {
-                                oldHtmlChunk += escaped;
-                                newHtmlChunk += escaped;
-                            }
-                        });
-                    } else {
-                        // 行モードの場合はブロック全体をハイライト
-                        if (oldText) oldHtmlChunk = `<span class="del">${escapeHtml(oldText)}</span>`;
-                        if (newText) newHtmlChunk = `<span class="ins">${escapeHtml(newText)}</span>`;
-                    }
-
-                    // ブロックの「最後に」不足分の改行を追加して高さを合わせる（途中で改行させない）
-                    htmlOld += oldHtmlChunk + (oldLines < newLines ? padding : '');
-                    htmlNew += newHtmlChunk + (newLines < oldLines ? padding : '');
-                }
-            });
-
-            document.getElementById('result-old').innerHTML = htmlOld;
-            document.getElementById('result-new').innerHTML = htmlNew;
             document.getElementById('result-container').style.display = 'flex';
             document.getElementById('minimap').style.display = 'block';
 
@@ -303,8 +346,9 @@
                 });
             };
 
-            createMarkers('#result-old .del', 'del-marker');
-            createMarkers('#result-new .ins', 'ins-marker');
+            // セレクタを新しい構造（.diff-cell）に対応
+            createMarkers('.left-cell .del', 'del-marker');
+            createMarkers('.right-cell .ins', 'ins-marker');
 
             minimap.onclick = (e) => {
                 const clickY = e.clientY;
@@ -322,6 +366,19 @@
                 drawMinimap();
             }
         });
+
+        function swapTexts() {
+            const oldInput = document.getElementById('text-old');
+            const newInput = document.getElementById('text-new');
+            
+            const temp = oldInput.value;
+            oldInput.value = newInput.value;
+            newInput.value = temp;
+            
+            if (document.getElementById('result-container').style.display !== 'none') {
+                compareText();
+            }
+        }
     </script>
 </body>
 </html>
