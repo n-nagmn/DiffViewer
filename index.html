@@ -199,8 +199,9 @@
     <div id="minimap" class="minimap" style="display: none;"></div>
 
     <script>
+        let diffWorker = null;
+
         function compareText() {
-            // 改行コードの違いを \n に統一
             const textOld = document.getElementById('text-old').value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
             const textNew = document.getElementById('text-new').value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
             const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -208,119 +209,137 @@
             document.getElementById('old-count').innerText = `${textOld.length}文字`;
             document.getElementById('new-count').innerText = `${textNew.length}文字`;
 
-            const escapeHtml = (str) => {
-                return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            };
+            const resultContainer = document.getElementById('unified-result');
+            const resultWrapper = document.getElementById('result-container');
+            const minimap = document.getElementById('minimap');
 
-            // 【1】difff純正のトークン化アルゴリズム
-            const tokenize = (text, mode) => {
-                if (mode === 'line') {
-                    const result = [];
-                    let current = '';
-                    for (let i = 0; i < text.length; i++) {
-                        current += text[i];
-                        if (text[i] === '\n') {
-                            result.push(current);
-                            current = '';
-                        }
+            // 【追加】くるくる回るCSSアニメーションと待機画面
+            resultContainer.innerHTML = `
+                <style>
+                    .spinner {
+                        border: 4px solid #f3f3f3;
+                        border-top: 4px solid #3498db;
+                        border-radius: 50%;
+                        width: 40px;
+                        height: 40px;
+                        animation: spin 1s linear infinite;
+                        margin: 0 auto 15px auto;
                     }
-                    if (current !== '') result.push(current);
-                    return result;
-                } else if (mode === 'char') {
-                    return text.split('');
-                } else {
-                    const tokens = [];
-                    const regex = /([a-zA-Z0-9]+|\n|[^a-zA-Z0-9\n])/g;
-                    let match;
-                    while ((match = regex.exec(text)) !== null) {
-                        tokens.push(match[0]);
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
                     }
-                    return tokens;
-                }
-            };
+                </style>
+                <div style="padding: 50px; text-align: center; width: 100%; color: #555; font-family: sans-serif;">
+                    <div class="spinner"></div>
+                    <strong>差分を計算・構築中...</strong>
+                    <div style="margin-top:10px; font-size: 13px; color: #888;">
+                        ブラウザはフリーズしていません。<br>文字数が多い場合、このまま数十秒お待ちください。
+                    </div>
+                </div>
+            `;
+            resultWrapper.style.display = 'flex';
+            minimap.style.display = 'none';
 
-            const oldTokens = tokenize(textOld, mode);
-            const newTokens = tokenize(textNew, mode);
+            if (diffWorker) {
+                diffWorker.terminate();
+            }
 
-            // 【2】jsdiffを使ってトークン同士を比較
-            const diffResult = Diff.diffArrays(oldTokens, newTokens);
+            // Web Workerコード（トークン化もHTML構築もすべてここで実行）
+            const workerCode = `
+                importScripts('https://cdnjs.cloudflare.com/ajax/libs/jsdiff/7.0.0/diff.min.js');
 
-            // 【3】改行を検知して左右の行を同期させる
-            let leftRows = [];
-            let rightRows = [];
-            let currentLeft = '';
-            let currentRight = '';
+                self.onmessage = function(e) {
+                    const textOld = e.data.textOld;
+                    const textNew = e.data.textNew;
+                    const mode = e.data.mode;
 
-            diffResult.forEach(part => {
-                part.value.forEach(token => {
-                    const subTokens = token.split(/(\n)/); 
+                    // 1. 自作の遅いtokenizeを廃止し、jsdiffの標準メソッドを使用
+                    let diffResult;
+                    if (mode === 'line') {
+                        diffResult = Diff.diffLines(textOld, textNew);
+                    } else if (mode === 'word') {
+                        diffResult = Diff.diffWords(textOld, textNew);
+                    } else {
+                        diffResult = Diff.diffChars(textOld, textNew);
+                    }
 
-                    subTokens.forEach(subToken => {
-                        if (subToken === '\n') {
-                            if (part.added) {
-                                rightRows.push(currentRight); currentRight = '';
-                                leftRows.push(currentLeft);   currentLeft = '';
-                            } else if (part.removed) {
-                                leftRows.push(currentLeft);   currentLeft = '';
-                                rightRows.push(currentRight); currentRight = '';
-                            } else {
-                                leftRows.push(currentLeft);   currentLeft = '';
-                                rightRows.push(currentRight); currentRight = '';
-                            }
-                        } else if (subToken !== '') {
-                            const escaped = escapeHtml(subToken);
-                            let html = '';
-                            
-                            if (part.added) {
-                                html = `<span class="ins">${escaped}</span>`;
-                                currentRight += html;
-                            } else if (part.removed) {
-                                html = `<span class="del">${escaped}</span>`;
-                                currentLeft += html;
-                            } else {
-                                html = escaped;
-                                currentLeft += html;
-                                currentRight += html;
+                    // 2. エスケープ処理の高速化
+                    const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
+                    const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
+
+                    let leftRows = [];
+                    let rightRows = [];
+                    let currentLeft = [];
+                    let currentRight = [];
+
+                    // 3. 文字列連結(+=)を避け、配列(push)とjoinを使用
+                    diffResult.forEach(part => {
+                        // diffLines等の結果は文字列で返ってくるため、ここで改行ごとに分割
+                        const subTokens = part.value.split(/(\\n)/);
+                        
+                        for (let i = 0; i < subTokens.length; i++) {
+                            const subToken = subTokens[i];
+                            if (subToken === '\\n') {
+                                leftRows.push(currentLeft.join(''));
+                                rightRows.push(currentRight.join(''));
+                                currentLeft = [];
+                                currentRight = [];
+                            } else if (subToken !== '') {
+                                const escaped = escapeHtml(subToken);
+                                if (part.added) {
+                                    currentRight.push('<span class="ins">' + escaped + '</span>');
+                                } else if (part.removed) {
+                                    currentLeft.push('<span class="del">' + escaped + '</span>');
+                                } else {
+                                    currentLeft.push(escaped);
+                                    currentRight.push(escaped);
+                                }
                             }
                         }
                     });
-                });
-            });
 
-            leftRows.push(currentLeft);
-            rightRows.push(currentRight);
+                    leftRows.push(currentLeft.join(''));
+                    rightRows.push(currentRight.join(''));
 
-            // 【4】HTMLの行ブロックとして出力
-            const resultContainer = document.getElementById('unified-result');
-            resultContainer.innerHTML = ''; 
+                    // 行ごとのdivブロックを生成
+                    const htmlChunks = [];
+                    for (let i = 0; i < leftRows.length; i++) {
+                        const l = leftRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : leftRows[i];
+                        const r = rightRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : rightRows[i];
+                        htmlChunks.push(
+                            '<div class="diff-row">' +
+                                '<div class="diff-cell left-cell">' + l + '</div>' +
+                                '<div class="diff-cell right-cell">' + r + '</div>' +
+                            '</div>'
+                        );
+                    }
 
-            for (let i = 0; i < leftRows.length; i++) {
-                const row = document.createElement('div');
-                row.className = 'diff-row';
+                    // 完全に完成したHTML文字列だけをメインスレッドへ返す
+                    self.postMessage(htmlChunks.join(''));
+                };
+            `;
 
-                const leftCell = document.createElement('div');
-                leftCell.className = 'diff-cell left-cell';
-                leftCell.innerHTML = leftRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : leftRows[i];
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            diffWorker = new Worker(URL.createObjectURL(blob));
 
-                const rightCell = document.createElement('div');
-                rightCell.className = 'diff-cell right-cell';
-                rightCell.innerHTML = rightRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : rightRows[i];
+            // メインスレッド（画面側）の受信処理
+            diffWorker.onmessage = function(e) {
+                const finalHtml = e.data;
+                
+                // 画面側は受け取ったHTML文字列を入れるだけ（負荷ゼロ）
+                resultContainer.innerHTML = finalHtml;
+                minimap.style.display = 'block';
+                setTimeout(drawMinimap, 100);
+            };
 
-                row.appendChild(leftCell);
-                row.appendChild(rightCell);
-                resultContainer.appendChild(row);
-            }
-
-            document.getElementById('result-container').style.display = 'flex';
-            document.getElementById('minimap').style.display = 'block';
-
-            setTimeout(drawMinimap, 100);
+            // Workerにプレーンテキストだけを投げて処理開始
+            diffWorker.postMessage({ textOld, textNew, mode });
         }
 
         function drawMinimap() {
             const minimap = document.getElementById('minimap');
             minimap.innerHTML = '';
-
             const pageHeight = document.documentElement.scrollHeight;
             
             const createMarkers = (selector, markerClass) => {
@@ -337,16 +356,12 @@
 
                     marker.onclick = (e) => {
                         e.stopPropagation();
-                        window.scrollTo({ 
-                            top: absoluteTop - 100, 
-                            behavior: 'smooth' 
-                        });
+                        window.scrollTo({ top: absoluteTop - 100, behavior: 'smooth' });
                     };
                     minimap.appendChild(marker);
                 });
             };
 
-            // セレクタを新しい構造（.diff-cell）に対応
             createMarkers('.left-cell .del', 'del-marker');
             createMarkers('.right-cell .ins', 'ins-marker');
 
@@ -370,11 +385,9 @@
         function swapTexts() {
             const oldInput = document.getElementById('text-old');
             const newInput = document.getElementById('text-new');
-            
             const temp = oldInput.value;
             oldInput.value = newInput.value;
             newInput.value = temp;
-            
             if (document.getElementById('result-container').style.display !== 'none') {
                 compareText();
             }
