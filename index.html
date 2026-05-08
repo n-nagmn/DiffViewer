@@ -10,7 +10,7 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             margin: 0;
             padding: 20px;
-            padding-right: 40px; 
+            padding-right: 50px; /* バーのための余白 */
             background-color: #ffffff;
             color: #333;
         }
@@ -77,7 +77,7 @@
             font-weight: normal;
         }
         
-        /* ミニマップ */
+        /* ミニマップ（復活） */
         .minimap {
             position: fixed;
             top: 0;
@@ -96,9 +96,7 @@
             width: 100%;
             min-height: 3px;
             opacity: 0.8;
-        }
-        .minimap-marker:hover {
-            opacity: 1;
+            pointer-events: none; /* クリックは背景のminimapで拾う */
         }
         .minimap-marker.del-marker {
             background-color: #4da6ff;
@@ -149,6 +147,7 @@
             border-right: 1px solid #bbb;
         }
         
+        /* 上に戻るボタン（復活） */
         #back-to-top {
             position: fixed;
             bottom: 30px;
@@ -186,7 +185,7 @@
             position: relative;
         }
 
-        /* 類似度表示エリア（シミラリティチェッカー専用） */
+        /* 類似度表示エリア */
         .similarity-wrapper {
             background-color: #f8f9fa;
             border: 1px solid #ddd;
@@ -233,6 +232,7 @@
     </style>
 </head>
 <body>
+    <h1>テキスト比較ツール</h1>
     <div class="flex-container">
         <div class="pane">
             <div class="pane-header">
@@ -305,7 +305,6 @@
             const similarityContainer = document.getElementById('similarity-container');
             const minimap = document.getElementById('minimap');
 
-            // シミラリティチェッカーモードの時のみバーを表示する
             if (mode === 'academic') {
                 similarityContainer.style.display = 'block';
             } else {
@@ -334,7 +333,6 @@
                     let similarity = 0;
 
                     if (mode === 'academic') {
-                        // 【論文基準】10-gram Jaccard係数
                         const n = 10;
                         const strOld = textOld.replace(/[\\s\\r\\n　]+/g, '');
                         const strNew = textNew.replace(/[\\s\\r\\n　]+/g, '');
@@ -369,16 +367,12 @@
                     const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
                     const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
 
-                    let leftRows = [];
-                    let rightRows = [];
-                    let currentLeft = '';
-                    let currentRight = '';
+                    let leftRows = [], rightRows = [];
+                    let currentLeft = '', currentRight = '';
 
                     diffResult.forEach(part => {
-                        // 【修正箇所】エスケープ文字を \\n に修正
                         const lines = part.value.split('\\n');
                         
-                        // 変更がない共通部分が来たタイミングで、左右の行の高さを同期させる
                         if (!part.added && !part.removed) {
                             const maxTotal = Math.max(leftRows.length, rightRows.length);
                             while (leftRows.length < maxTotal) leftRows.push('');
@@ -416,13 +410,11 @@
                         }
                     });
 
-                    // 最後に改行されずに残っているテキストを行として追加
                     if (currentLeft !== '' || currentRight !== '') {
                         leftRows.push(currentLeft);
                         rightRows.push(currentRight);
                     }
 
-                    // 最終的な行数を揃える
                     const finalMax = Math.max(leftRows.length, rightRows.length);
                     while (leftRows.length < finalMax) leftRows.push('');
                     while (rightRows.length < finalMax) rightRows.push('');
@@ -454,53 +446,73 @@
                     const scoreEl = document.getElementById('similarity-score');
                     const barEl = document.getElementById('similarity-bar');
                     const statusEl = document.getElementById('similarity-status');
-                    
                     const simVal = similarity.toFixed(1);
                     scoreEl.innerText = `${simVal}%`;
                     barEl.style.width = `${simVal}%`;
-                    
-                    let color = '#28a745';
-                    let status = '安全';
+                    let color = '#28a745'; let status = '安全';
                     if (similarity >= 75) { color = '#dc3545'; status = '極めて高い類似性'; }
                     else if (similarity >= 50) { color = '#fd7e14'; status = '高い類似性'; }
                     else if (similarity >= 25) { color = '#ffc107'; status = '要注意'; }
                     else if (similarity >= 15) { color = '#17a2b8'; status = '許容範囲内'; }
-
-                    scoreEl.style.color = color;
-                    barEl.style.backgroundColor = color;
-                    statusEl.innerText = status;
-                    statusEl.style.color = color;
+                    scoreEl.style.color = color; barEl.style.backgroundColor = color;
+                    statusEl.innerText = status; statusEl.style.color = color;
                 }
 
                 resultContainer.innerHTML = finalHtml;
                 minimap.style.display = 'block';
-                setTimeout(drawMinimap, 100);
+                // レンダリング後にミニマップを描画
+                setTimeout(drawMinimap, 200);
             };
 
             diffWorker.postMessage({ textOld, textNew, mode });
         }
 
-        // --- 以下、既存の補助関数 ---
         function drawMinimap() {
             const minimap = document.getElementById('minimap');
             minimap.innerHTML = '';
             const pageHeight = document.documentElement.scrollHeight;
+            const viewHeight = window.innerHeight;
+
             const createMarkers = (selector, markerClass) => {
                 document.querySelectorAll(selector).forEach(el => {
                     const rect = el.getBoundingClientRect();
                     const absoluteTop = rect.top + window.scrollY;
                     const topPercent = (absoluteTop / pageHeight) * 100;
                     const heightPercent = (rect.height / pageHeight) * 100;
+
                     const marker = document.createElement('div');
-                    marker.className = `minimap-marker \${markerClass}`;
-                    marker.style.top = `\${topPercent}%`;
-                    marker.style.height = `\${Math.max(heightPercent, 0.2)}%`;
-                    marker.onclick = (e) => { e.stopPropagation(); window.scrollTo({ top: absoluteTop - 100, behavior: 'smooth' }); };
+                    marker.className = `minimap-marker ${markerClass}`;
+                    marker.style.top = `${topPercent}%`;
+                    marker.style.height = `${Math.max(heightPercent, 0.2)}%`;
                     minimap.appendChild(marker);
                 });
             };
+
             createMarkers('.left-cell .del', 'del-marker');
             createMarkers('.right-cell .ins', 'ins-marker');
+
+            // ミニマップクリックでジャンプ
+            minimap.onclick = (e) => {
+                const clickY = e.clientY;
+                const scrollTarget = (clickY / viewHeight) * pageHeight;
+                window.scrollTo({
+                    top: scrollTarget - (viewHeight / 2),
+                    behavior: 'smooth'
+                });
+            };
+        }
+
+        window.addEventListener('scroll', () => {
+            const btn = document.getElementById('back-to-top');
+            if (window.scrollY > 300) {
+                btn.style.display = 'flex';
+            } else {
+                btn.style.display = 'none';
+            }
+        });
+
+        function scrollToTop() {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
         function swapTexts() {
@@ -510,11 +522,9 @@
             if (document.getElementById('result-container').style.display !== 'none') compareText();
         }
 
-        window.addEventListener('scroll', () => {
-            document.getElementById('back-to-top').style.display = window.scrollY > 300 ? 'flex' : 'none';
+        window.addEventListener('resize', () => {
+            if (document.getElementById('minimap').style.display !== 'none') drawMinimap();
         });
-
-        function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }); }
 
         document.addEventListener('DOMContentLoaded', () => {
             const unifiedResult = document.getElementById('unified-result');
