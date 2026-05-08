@@ -375,7 +375,8 @@
                     let currentRight = '';
 
                     diffResult.forEach(part => {
-                        const lines = part.value.split('\n');
+                        // 【修正箇所】エスケープ文字を \\n に修正
+                        const lines = part.value.split('\\n');
                         
                         // 変更がない共通部分が来たタイミングで、左右の行の高さを同期させる
                         if (!part.added && !part.removed) {
