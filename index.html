@@ -233,9 +233,6 @@
     </style>
 </head>
 <body>
-
-    <h1>テキスト比較ツール</h1>
-
     <div class="flex-container">
         <div class="pane">
             <div class="pane-header">
@@ -372,29 +369,62 @@
                     const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
                     const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
 
-                    let leftRows = [], rightRows = [], currentLeft = [], currentRight = [];
+                    let leftRows = [];
+                    let rightRows = [];
+                    let currentLeft = '';
+                    let currentRight = '';
 
                     diffResult.forEach(part => {
-                        const subTokens = part.value.split(/(\\n)/);
-                        for (let i = 0; i < subTokens.length; i++) {
-                            const subToken = subTokens[i];
-                            if (subToken === '\\n') {
-                                leftRows.push(currentLeft.join(''));
-                                rightRows.push(currentRight.join(''));
-                                currentLeft = []; currentRight = [];
-                            } else if (subToken !== '') {
-                                const escaped = escapeHtml(subToken);
-                                if (part.added) currentRight.push('<span class="ins">' + escaped + '</span>');
-                                else if (part.removed) currentLeft.push('<span class="del">' + escaped + '</span>');
-                                else {
-                                    currentLeft.push(escaped);
-                                    currentRight.push(escaped);
+                        const lines = part.value.split('\n');
+                        
+                        // 変更がない共通部分が来たタイミングで、左右の行の高さを同期させる
+                        if (!part.added && !part.removed) {
+                            const maxTotal = Math.max(leftRows.length, rightRows.length);
+                            while (leftRows.length < maxTotal) leftRows.push('');
+                            while (rightRows.length < maxTotal) rightRows.push('');
+                        }
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const isLastLine = (i === lines.length - 1);
+                            const text = lines[i] ? escapeHtml(lines[i]) : '';
+                            
+                            if (part.added) {
+                                if (text) currentRight += '<span class="ins">' + text + '</span>';
+                                if (!isLastLine) {
+                                    rightRows.push(currentRight);
+                                    currentRight = '';
+                                }
+                            } else if (part.removed) {
+                                if (text) currentLeft += '<span class="del">' + text + '</span>';
+                                if (!isLastLine) {
+                                    leftRows.push(currentLeft);
+                                    currentLeft = '';
+                                }
+                            } else {
+                                if (text) {
+                                    currentLeft += text;
+                                    currentRight += text;
+                                }
+                                if (!isLastLine) {
+                                    leftRows.push(currentLeft);
+                                    rightRows.push(currentRight);
+                                    currentLeft = '';
+                                    currentRight = '';
                                 }
                             }
                         }
                     });
-                    leftRows.push(currentLeft.join(''));
-                    rightRows.push(currentRight.join(''));
+
+                    // 最後に改行されずに残っているテキストを行として追加
+                    if (currentLeft !== '' || currentRight !== '') {
+                        leftRows.push(currentLeft);
+                        rightRows.push(currentRight);
+                    }
+
+                    // 最終的な行数を揃える
+                    const finalMax = Math.max(leftRows.length, rightRows.length);
+                    while (leftRows.length < finalMax) leftRows.push('');
+                    while (rightRows.length < finalMax) rightRows.push('');
 
                     const htmlChunks = [];
                     for (let i = 0; i < leftRows.length; i++) {
