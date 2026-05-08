@@ -77,7 +77,7 @@
             font-weight: normal;
         }
         
-        /* ミニマップ（復活） */
+        /* ミニマップ */
         .minimap {
             position: fixed;
             top: 0;
@@ -96,7 +96,7 @@
             width: 100%;
             min-height: 3px;
             opacity: 0.8;
-            pointer-events: none; /* クリックは背景のminimapで拾う */
+            pointer-events: none;
         }
         .minimap-marker.del-marker {
             background-color: #4da6ff;
@@ -146,8 +146,12 @@
         .diff-cell.left-cell {
             border-right: 1px solid #bbb;
         }
+
+        /* 【重要】反対側を「選択も干渉もできない」状態にするロック */
+        .selecting-left .right-cell { user-select: none !important; pointer-events: none; }
+        .selecting-right .left-cell { user-select: none !important; pointer-events: none; }
         
-        /* 上に戻るボタン（復活） */
+        /* 上に戻るボタン */
         #back-to-top {
             position: fixed;
             bottom: 30px;
@@ -180,7 +184,7 @@
         }
         .diff-row.active-row {
             background-color: #fff8c5 !important;
-            outline: 1px solid #e1d387;
+            outline: 1px solid #e6ddae;
             z-index: 1;
             position: relative;
         }
@@ -459,7 +463,6 @@
 
                 resultContainer.innerHTML = finalHtml;
                 minimap.style.display = 'block';
-                // レンダリング後にミニマップを描画
                 setTimeout(drawMinimap, 200);
             };
 
@@ -490,7 +493,6 @@
             createMarkers('.left-cell .del', 'del-marker');
             createMarkers('.right-cell .ins', 'ins-marker');
 
-            // ミニマップクリックでジャンプ
             minimap.onclick = (e) => {
                 const clickY = e.clientY;
                 const scrollTarget = (clickY / viewHeight) * pageHeight;
@@ -527,6 +529,30 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             const unifiedResult = document.getElementById('unified-result');
+            
+            // 【解決策：永続ロック】
+            // クリック（mousedown）した瞬間に反対側をロックし、次にクリックされるまでロックを解除しない
+            unifiedResult.addEventListener('mousedown', (e) => {
+                // 新しい操作のたびに一旦すべてのロックを解除
+                unifiedResult.classList.remove('selecting-left', 'selecting-right');
+
+                const leftCell = e.target.closest('.left-cell');
+                const rightCell = e.target.closest('.right-cell');
+                if (leftCell) {
+                    unifiedResult.classList.add('selecting-left');
+                } else if (rightCell) {
+                    unifiedResult.classList.add('selecting-right');
+                }
+            });
+
+            // mouseupでクラスを消すのをやめる（ブラウザの勝手な再選択を防ぐ）
+            // その代わり、画面のどこかを普通にクリックした時に選択範囲が消えるのと同時にロックも外れるようにする
+            window.addEventListener('mousedown', (e) => {
+                if (!e.target.closest('.result-pane')) {
+                    unifiedResult.classList.remove('selecting-left', 'selecting-right');
+                }
+            });
+
             const highlightCorrespondingRow = (event) => {
                 document.querySelectorAll('.diff-row.active-row').forEach(row => row.classList.remove('active-row'));
                 const selection = window.getSelection();
