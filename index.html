@@ -179,6 +179,21 @@
             background-color: #2980b9;
             opacity: 1;
         }
+        /* -----------------------------------
+           追加: 差分行のハイライト機能
+        ------------------------------------ */
+        /* ① マウスホバー時の軽いハイライト（視認性向上） */
+        .diff-row:hover {
+            background-color: #f6f8fa;
+        }
+
+        /* ② テキスト選択/クリック時の強いハイライト */
+        .diff-row.active-row {
+            background-color: #fff8c5 !important; /* 目立つ薄い黄色 */
+            outline: 1px solid #e1d387; /* 境界線を強調 */
+            z-index: 1; /* アウトラインが隣の行に隠れないようにする */
+            position: relative;
+        }
     </style>
 </head>
 <body>
@@ -432,6 +447,54 @@
                 behavior: 'smooth'
             });
         }
+
+        // -----------------------------------
+        // 追加: テキスト選択・クリックで行をハイライトする処理
+        // -----------------------------------
+        document.addEventListener('DOMContentLoaded', () => {
+            const unifiedResult = document.getElementById('unified-result');
+
+            const highlightCorrespondingRow = (event) => {
+                // 1. 現在のハイライトをすべて解除
+                document.querySelectorAll('.diff-row.active-row').forEach(row => {
+                    row.classList.remove('active-row');
+                });
+
+                // 2. 選択されているテキスト範囲を取得
+                const selection = window.getSelection();
+                let targetNode = event.target;
+
+                // テキストがドラッグ選択されている場合は、選択範囲の起点ノードを優先
+                if (selection.toString().length > 0 && selection.anchorNode) {
+                    targetNode = selection.anchorNode.nodeType === 3 
+                        ? selection.anchorNode.parentNode 
+                        : selection.anchorNode;
+                }
+
+                // 3. クリックまたは選択された場所が含まれる行(.diff-row)を探す
+                const diffRow = targetNode.closest('.diff-row');
+
+                // 4. 行が見つかればハイライト用のクラスを付与
+                if (diffRow) {
+                    diffRow.classList.add('active-row');
+                }
+            };
+
+            // 結果エリア内でのクリック、またはドラッグ選択終了（mouseup）で発火
+            unifiedResult.addEventListener('click', highlightCorrespondingRow);
+            unifiedResult.addEventListener('mouseup', highlightCorrespondingRow);
+
+            // 【オプション】結果エリア外をクリックした際にハイライトを消したい場合は以下のコメントアウトを解除
+            /*
+            document.addEventListener('click', (e) => {
+                if (!unifiedResult.contains(e.target)) {
+                    document.querySelectorAll('.diff-row.active-row').forEach(row => {
+                        row.classList.remove('active-row');
+                    });
+                }
+            });
+            */
+        });
     </script>
 </body>
 </html>
