@@ -371,56 +371,35 @@
                     const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
 
                     let leftRows = [], rightRows = [];
-                    let currentLeft = '', currentRight = '';
 
-                    diffResult.forEach(part => {
-                        const lines = part.value.split('\\n');
-                        
-                        if (!part.added && !part.removed) {
-                            const maxTotal = Math.max(leftRows.length, rightRows.length);
-                            while (leftRows.length < maxTotal) leftRows.push('');
-                            while (rightRows.length < maxTotal) rightRows.push('');
-                        }
-
+                    // 1つのpartの行をバッファに溜め、行単位で左右に分配する
+                    const flushPart = (part, lines) => {
+                        const isAdded = !!part.added, isRemoved = !!part.removed;
+                        // partが単一行(行単位モードや連続した単一変更)なら左右へそのまま1行として追加
+                        // 複数行なら各行を対応する側に push し、反対側は '' でパッド
                         for (let i = 0; i < lines.length; i++) {
-                            const isLastLine = (i === lines.length - 1);
                             const text = lines[i] ? escapeHtml(lines[i]) : '';
-                            
-                            if (part.added) {
-                                if (text) currentRight += '<span class="ins">' + text + '</span>';
-                                if (!isLastLine) {
-                                    rightRows.push(currentRight);
-                                    currentRight = '';
-                                }
-                            } else if (part.removed) {
-                                if (text) currentLeft += '<span class="del">' + text + '</span>';
-                                if (!isLastLine) {
-                                    leftRows.push(currentLeft);
-                                    currentLeft = '';
-                                }
+                            if (isAdded) {
+                                rightRows.push(text ? '<span class="ins">' + text + '</span>' : '');
+                                leftRows.push('');
+                            } else if (isRemoved) {
+                                leftRows.push(text ? '<span class="del">' + text + '</span>' : '');
+                                rightRows.push('');
                             } else {
-                                if (text) {
-                                    currentLeft += text;
-                                    currentRight += text;
-                                }
-                                if (!isLastLine) {
-                                    leftRows.push(currentLeft);
-                                    rightRows.push(currentRight);
-                                    currentLeft = '';
-                                    currentRight = '';
-                                }
+                                leftRows.push(text);
+                                rightRows.push(text);
                             }
                         }
+                    };
+
+                    diffResult.forEach(part => {
+                        // part.value の末尾が改行なら行分割で末尾に空要素が入る。
+                        // 最後の行が '' だった場合だけ除去(意図した行を壊さない)
+                        let lines = part.value.split('\\n');
+                        if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+                        if (lines.length === 0) lines = [''];
+                        flushPart(part, lines);
                     });
-
-                    if (currentLeft !== '' || currentRight !== '') {
-                        leftRows.push(currentLeft);
-                        rightRows.push(currentRight);
-                    }
-
-                    const finalMax = Math.max(leftRows.length, rightRows.length);
-                    while (leftRows.length < finalMax) leftRows.push('');
-                    while (rightRows.length < finalMax) rightRows.push('');
 
                     const htmlChunks = [];
                     for (let i = 0; i < leftRows.length; i++) {
