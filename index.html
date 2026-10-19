@@ -317,6 +317,19 @@
                 similarityContainer.style.display = 'none';
             }
 
+            // L3: 片側または両側が空の場合は差分を計算せず「差分はありません」を表示
+            if (textOld === '' || textNew === '') {
+                resultContainer.innerHTML = `
+                    <div style="padding: 50px; text-align: center; width: 100%; color: #555; font-family: sans-serif;">
+                        <strong>差分はありません</strong>
+                        <div style="margin-top: 10px; font-size: 13px;">両方のテキスト欄に内容を入力してください。</div>
+                    </div>
+                `;
+                resultWrapper.style.display = 'flex';
+                minimap.style.display = 'none';
+                return;
+            }
+
             resultContainer.innerHTML = `
                 <div style="padding: 50px; text-align: center; width: 100%; color: #555; font-family: sans-serif;">
                     <strong>差分を計算中...</strong>
@@ -325,167 +338,261 @@
             resultWrapper.style.display = 'flex';
             minimap.style.display = 'none';
 
-            // 差分再計算時は新しい Worker を作成するため、古い Worker を確実に terminate する
-            if (diffWorker) diffWorker.terminate();
-
-            const workerCode = `
-                importScripts('https://cdnjs.cloudflare.com/ajax/libs/jsdiff/7.0.0/diff.min.js');
-
-                self.onmessage = function(e) {
-                    const textOld = e.data.textOld;
-                    const textNew = e.data.textNew;
-                    const mode = e.data.mode;
-
-                    let diffResult;
-                    let similarity = 0;
-
-                    if (mode === 'academic') {
-                        const n = 10;
-                        const strOld = textOld.replace(/[\\s\\r\\n　]+/g, '');
-                        const strNew = textNew.replace(/[\\s\\r\\n　]+/g, '');
-
-                        const getNGrams = (str, n) => {
-                            const ngrams = new Set();
-                            for (let i = 0; i <= str.length - n; i++) {
-                                ngrams.add(str.substring(i, i + n));
-                            }
-                            return ngrams;
-                        };
-
-                        if (strOld.length < n || strNew.length < n) {
-                            similarity = (strOld === strNew && strOld !== '') ? 100 : 0;
-                        } else {
-                            const setA = getNGrams(strOld, n);
-                            const setB = getNGrams(strNew, n);
-                            let intersection = 0;
-                            for (let gram of setA) {
-                                if (setB.has(gram)) intersection++;
-                            }
-                            const union = setA.size + setB.size - intersection;
-                            similarity = union === 0 ? 0 : (intersection / union) * 100;
-                        }
-                        diffResult = Diff.diffChars(textOld, textNew);
-                    } else {
-                        if (mode === 'line') diffResult = Diff.diffLines(textOld, textNew);
-                        else if (mode === 'word') diffResult = Diff.diffWords(textOld, textNew);
-                        else diffResult = Diff.diffChars(textOld, textNew);
+            // M5: Worker は一度だけ生成して再利用する（生成・破棄の無駄を省く）
+            if (!diffWorker) {
+                diffWorker = createDiffWorker();
+                diffWorker.onmessage = function(e) {
+                    if (e.data.error) {
+                        handleDiffError(e.data.error);
+                        return;
                     }
-
-                    const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
-                    const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
-
-                    let leftRows = [], rightRows = [];
-
-                    // 1つのpartの行をバッファに溜め、行単位で左右に分配する
-                    const flushPart = (part, lines) => {
-                        const isAdded = !!part.added, isRemoved = !!part.removed;
-                        // partが単一行(行単位モードや連続した単一変更)なら左右へそのまま1行として追加
-                        // 複数行なら各行を対応する側に push し、反対側は '' でパッド
-                        for (let i = 0; i < lines.length; i++) {
-                            const text = lines[i] ? escapeHtml(lines[i]) : '';
-                            if (isAdded) {
-                                rightRows.push(text ? '<span class="ins">' + text + '</span>' : '');
-                                leftRows.push('');
-                            } else if (isRemoved) {
-                                leftRows.push(text ? '<span class="del">' + text + '</span>' : '');
-                                rightRows.push('');
-                            } else {
-                                leftRows.push(text);
-                                rightRows.push(text);
-                            }
-                        }
-                    };
-
-                    diffResult.forEach(part => {
-                        // part.value の末尾が改行なら行分割で末尾に空要素が入る。
-                        // 最後の行が '' だった場合だけ除去(意図した行を壊さない)
-                        let lines = part.value.split('\\n');
-                        if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
-                        if (lines.length === 0) lines = [''];
-                        flushPart(part, lines);
-                    });
-
-                    const htmlChunks = [];
-                    for (let i = 0; i < leftRows.length; i++) {
-                        const l = leftRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : leftRows[i];
-                        const r = rightRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : rightRows[i];
-                        htmlChunks.push(
-                            '<div class="diff-row">' +
-                                '<div class="diff-cell left-cell">' + l + '</div>' +
-                                '<div class="diff-cell right-cell">' + r + '</div>' +
-                            '</div>'
-                        );
-                    }
-
-                    self.postMessage({ html: htmlChunks.join(''), similarity: similarity });
+                    handleDiffResult(e.data.html, e.data.similarity);
                 };
-            `;
+                diffWorker.onerror = function(e) {
+                    handleDiffError(e.message || '不明なエラー');
+                };
+            }
 
-            const blob = new Blob([workerCode], { type: 'application/javascript' });
-            diffWorker = new Worker(URL.createObjectURL(blob));
+            // H3: 30秒ウォッチドッグ — 計算がハングしたらタイムアウトとして扱わせる
+            clearTimeout(diffWorker._watchdogId);
+            const watchdogId = setTimeout(() => {
+                handleDiffError('差分の計算が30秒を超過したためタイムアウトしました。');
+            }, 30000);
+            diffWorker._watchdogId = watchdogId;
 
-            // Worker がメッセージを送出した後は不要になるため terminate する
-            // (差分は Worker ごとに1回のみ計算される。結果は postMessage で渡された HTML に含まれる)
-            diffWorker.onmessage = function(e) {
-                const finalHtml = e.data.html;
-                const similarity = parseFloat(e.data.similarity);
-                
+            // H3: キャンセルボタンを表示
+            const cancelBtn = document.createElement('button');
+            cancelBtn.id = 'diff-cancel-btn';
+            cancelBtn.textContent = 'キャンセル';
+            cancelBtn.onclick = function() {
+                cancelBtn.onclick = null;
+                handleDiffError('ユーザーにより差分計算がキャンセルされました。');
+            };
+            document.querySelector('.controls').appendChild(cancelBtn);
+
+            function handleDiffError(message) {
+                clearTimeout(watchdogId);
+                if (diffWorker && diffWorker._watchdogId === watchdogId) diffWorker._watchdogId = null;
+                const btn = document.getElementById('diff-cancel-btn');
+                if (btn) btn.remove();
+                resultContainer.innerHTML = `
+                    <div style="padding: 50px; text-align: center; width: 100%; color: #c00; font-family: sans-serif;">
+                        <strong>${escapeHtmlMain(message)}</strong>
+                    </div>
+                `;
+                minimap.style.display = 'none';
+            }
+
+            function escapeHtmlMain(str) {
+                return String(str).replace(/[&<>'"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[m]));
+            }
+
+            function handleDiffResult(finalHtml, similarityValue) {
+                clearTimeout(watchdogId);
+                if (diffWorker && diffWorker._watchdogId === watchdogId) diffWorker._watchdogId = null;
+                const btn = document.getElementById('diff-cancel-btn');
+                if (btn) btn.remove();
+
                 if (mode === 'academic') {
                     const scoreEl = document.getElementById('similarity-score');
                     const barEl = document.getElementById('similarity-bar');
                     const statusEl = document.getElementById('similarity-status');
-                    const simVal = similarity.toFixed(1);
+                    const simVal = similarityValue.toFixed(1);
                     scoreEl.innerText = `${simVal}%`;
                     barEl.style.width = `${simVal}%`;
                     let color = '#28a745'; let status = '安全';
-                    if (similarity >= 75) { color = '#dc3545'; status = '極めて高い類似性'; }
-                    else if (similarity >= 50) { color = '#fd7e14'; status = '高い類似性'; }
-                    else if (similarity >= 25) { color = '#ffc107'; status = '要注意'; }
-                    else if (similarity >= 15) { color = '#17a2b8'; status = '許容範囲内'; }
+                    if (similarityValue >= 75) { color = '#dc3545'; status = '極めて高い類似性'; }
+                    else if (similarityValue >= 50) { color = '#fd7e14'; status = '高い類似性'; }
+                    else if (similarityValue >= 25) { color = '#ffc107'; status = '要注意'; }
+                    else if (similarityValue >= 15) { color = '#17a2b8'; status = '許容範囲内'; }
                     scoreEl.style.color = color; barEl.style.backgroundColor = color;
                     statusEl.innerText = status; statusEl.style.color = color;
                 }
 
                 resultContainer.innerHTML = finalHtml;
                 minimap.style.display = 'block';
-                setTimeout(drawMinimap, 200);
-
-                // 結果の受信が完了したので Worker を terminate する（不要な Worker を放置しない）
-                diffWorker.terminate();
-                diffWorker = null;
-            };
-
-            // エラー時も Worker を破棄して放置しない
-            diffWorker.onerror = function(e) {
-                resultContainer.innerHTML = `
-                    <div style="padding: 50px; text-align: center; width: 100%; color: #c00; font-family: sans-serif;">
-                        <strong>差分の計算に失敗しました: ${e.message || '不明なエラー'}</strong>
-                    </div>
-                `;
-                diffWorker.terminate();
-                diffWorker = null;
-            };
+                // M3: 結果の innerHTML が置き換わったため、選択ロック用のセルキャッシュを再生成する
+                if (typeof window.refreshCellCache === 'function') window.refreshCellCache();
+                // M1: 200msのsetTimeoutの代わりに requestAnimationFrame を2回重ねて描画反映を待つ
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        drawMinimap();
+                    });
+                });
+            }
 
             diffWorker.postMessage({ textOld, textNew, mode });
+        }
+
+        // M5: Worker を一度生成して再利用する（Object URL をリークしない）
+        function createDiffWorker() {
+            const workerCode = `
+                // H3: importScripts の失敗を postMessage で送出する
+                try {
+                    importScripts('https://cdnjs.cloudflare.com/ajax/libs/jsdiff/7.0.0/diff.min.js');
+                } catch (err) {
+                    self.postMessage({ error: '差分ライブラリの読み込みに失敗しました: ' + (err && err.message ? err.message : String(err)) });
+                }
+
+                self.onmessage = function(e) {
+                    try {
+                        const textOld = e.data.textOld;
+                        const textNew = e.data.textNew;
+                        const mode = e.data.mode;
+
+                        let diffResult;
+                        let similarity = 0;
+
+                        if (mode === 'academic') {
+                            const n = 10;
+                            const strOld = textOld.replace(/[\\s\\r\\n　]+/g, '');
+                            const strNew = textNew.replace(/[\\s\\r\\n　]+/g, '');
+
+                            const getNGrams = (str, n) => {
+                                const ngrams = new Set();
+                                for (let i = 0; i <= str.length - n; i++) {
+                                    ngrams.add(str.substring(i, i + n));
+                                }
+                                return ngrams;
+                            };
+
+                            if (strOld.length < n || strNew.length < n) {
+                                similarity = (strOld === strNew && strOld !== '') ? 100 : 0;
+                            } else {
+                                const setA = getNGrams(strOld, n);
+                                const setB = getNGrams(strNew, n);
+                                let intersection = 0;
+                                for (let gram of setA) {
+                                    if (setB.has(gram)) intersection++;
+                                }
+                                const union = setA.size + setB.size - intersection;
+                                similarity = union === 0 ? 0 : (intersection / union) * 100;
+                            }
+                            diffResult = Diff.diffChars(textOld, textNew);
+                        } else {
+                            if (mode === 'line') diffResult = Diff.diffLines(textOld, textNew);
+                            else if (mode === 'word') diffResult = Diff.diffWords(textOld, textNew);
+                            else diffResult = Diff.diffChars(textOld, textNew);
+                        }
+
+                        const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' };
+                        const escapeHtml = (str) => str.replace(/[&<>'"]/g, match => escapeMap[match] || match);
+
+                        // H4: 行モードのみ「part を 1行ずつ左右に分配し、行数の多い側に合わせて反対側を空行でパッド」。
+                        // 文字/単語モードは各 part を行内にインラインで描画し、空行パッドしない。
+                        const isLineMode = (mode === 'line');
+                        const htmlChunks = [];
+
+                        if (!isLineMode) {
+                            // H4: 文字/単語モード → 各 part を1行にインラインで描画
+                            diffResult.forEach(part => {
+                                const value = escapeHtml(part.value);
+                                let leftHtml = '', rightHtml = '';
+                                if (part.added) {
+                                    // L6: 空行は nbsp を入れた ins/del として表示
+                                    rightHtml = (value === '' ? '<span class="ins">&nbsp;</span>' : '<span class="ins">' + value + '</span>');
+                                } else if (part.removed) {
+                                    leftHtml = (value === '' ? '<span class="del">&nbsp;</span>' : '<span class="del">' + value + '</span>');
+                                } else {
+                                    leftHtml = value;
+                                    rightHtml = value;
+                                }
+                                htmlChunks.push(
+                                    '<div class="diff-row">' +
+                                        '<div class="diff-cell left-cell">' + leftHtml + '</div>' +
+                                        '<div class="diff-cell right-cell">' + rightHtml + '</div>' +
+                                    '</div>'
+                                );
+                            });
+                            self.postMessage({ html: htmlChunks.join(''), similarity: similarity });
+                            return;
+                        }
+
+                        // 行モード: 左右の行バッファを構築し、part 間で行を揃える
+                        let leftRows = [], rightRows = [];
+                        let pendingLeft = [], pendingRight = [];
+                        const flushPending = () => {
+                            const max = Math.max(pendingLeft.length, pendingRight.length);
+                            for (let i = 0; i < max; i++) {
+                                leftRows.push(i < pendingLeft.length ? pendingLeft[i] : '');
+                                rightRows.push(i < pendingRight.length ? pendingRight[i] : '');
+                            }
+                            pendingLeft = [];
+                            pendingRight = [];
+                        };
+
+                        diffResult.forEach(part => {
+                            let lines = part.value.split('\\n');
+                            // part.value の末尾が改行なら行分割で末尾に空要素が入る。
+                            // 最後の行が '' だった場合だけ除去(意図した行を壊さない)
+                            if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+                            if (lines.length === 0) lines = [''];
+                            lines.forEach(text => {
+                                const escaped = escapeHtml(text);
+                                if (part.added) {
+                                    // L6: 空行は nbsp を入れた ins/del として表示
+                                    pendingRight.push(escaped === '' ? '<span class="ins">&nbsp;</span>' : '<span class="ins">' + escaped + '</span>');
+                                } else if (part.removed) {
+                                    pendingLeft.push(escaped === '' ? '<span class="del">&nbsp;</span>' : '<span class="del">' + escaped + '</span>');
+                                } else {
+                                    pendingLeft.push(text);
+                                    pendingRight.push(text);
+                                }
+                            });
+                            // 連続する変更part同士で行数が異なると対応がずれるため、
+                            // 各partの末尾で揃えてバッファを確定する
+                            flushPending();
+                        });
+                        flushPending();
+
+                        // 行モードのみ: 空セルは見た目用の非表示行
+                        for (let i = 0; i < leftRows.length; i++) {
+                            const l = leftRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : leftRows[i];
+                            const r = rightRows[i] === '' ? '<span style="visibility:hidden;">&nbsp;</span>' : rightRows[i];
+                            htmlChunks.push(
+                                '<div class="diff-row">' +
+                                    '<div class="diff-cell left-cell">' + l + '</div>' +
+                                    '<div class="diff-cell right-cell">' + r + '</div>' +
+                            '</div>'
+                            );
+                        }
+
+                        self.postMessage({ html: htmlChunks.join(''), similarity: similarity });
+                    } catch (err) {
+                        self.postMessage({ error: '差分の計算に失敗しました: ' + (err && err.message ? err.message : String(err)) });
+                    }
+                };
+            `;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+            // M5: Object URL を保持し、beforeunload で revoke できるようにする
+            workerObjectUrl = url;
+            return new Worker(url);
         }
 
         function drawMinimap() {
             const minimap = document.getElementById('minimap');
             minimap.innerHTML = '';
-            const pageHeight = document.documentElement.scrollHeight;
+            const resultPane = document.getElementById('unified-result');
+            if (!resultPane) return;
+
+            // H1/H2: マーカー位置・クリックスクロールは「結果pane基準」で計算する
+            const paneRect = resultPane.getBoundingClientRect();
+            const paneTopAbsolute = paneRect.top + window.scrollY;
+            const paneHeight = Math.max(resultPane.scrollHeight, paneRect.height, 1);
             const viewHeight = window.innerHeight;
 
             const createMarkers = (selector, markerClass) => {
                 document.querySelectorAll(selector).forEach(el => {
                     const rect = el.getBoundingClientRect();
-                    const absoluteTop = rect.top + window.scrollY;
-                    const topPercent = (absoluteTop / pageHeight) * 100;
-                    const heightPercent = (rect.height / pageHeight) * 100;
+                    const relativeTop = (rect.top + window.scrollY) - paneTopAbsolute;
+                    const topPercent = (relativeTop / paneHeight) * 100;
+                    const heightPercent = (rect.height / paneHeight) * 100;
 
                     const marker = document.createElement('div');
                     marker.className = `minimap-marker ${markerClass}`;
-                    marker.style.top = `${topPercent}%`;
-                    marker.style.height = `${Math.max(heightPercent, 0.2)}%`;
+                    marker.style.top = `${Math.max(topPercent, 0)}%`;
+                    marker.style.height = `${Math.max(heightPercent, 0.3)}%`;
                     minimap.appendChild(marker);
                 });
             };
@@ -493,11 +600,15 @@
             createMarkers('.left-cell .del', 'del-marker');
             createMarkers('.right-cell .ins', 'ins-marker');
 
+            // H2: クリック位置（viewport内の縦）をマーカー描画と同一基準（pane 全体 = scrollHeight）で
+            // pane 内位置に変換し、そこにスクロールさせる。
+            // paneRect.height はビューポートでクリップされた高さのため、ここで使ってはいけない。
             minimap.onclick = (e) => {
                 const clickY = e.clientY;
-                const scrollTarget = (clickY / viewHeight) * pageHeight;
+                const clickRelative = (clickY - paneRect.top) / Math.max(paneHeight, 1);
+                const target = paneTopAbsolute + clickRelative * paneHeight;
                 window.scrollTo({
-                    top: scrollTarget - (viewHeight / 2),
+                    top: target - (viewHeight / 2),
                     behavior: 'smooth'
                 });
             };
@@ -516,22 +627,48 @@
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
+        let swapTimer = null;
         function swapTexts() {
             const o = document.getElementById('text-old');
             const n = document.getElementById('text-new');
             const t = o.value; o.value = n.value; n.value = t;
-            if (document.getElementById('result-container').style.display !== 'none') compareText();
+            // M4: 連続クリックをまとめて1回だけ再計算する（デバウンス）
+            if (document.getElementById('result-container').style.display !== 'none') {
+                clearTimeout(swapTimer);
+                swapTimer = setTimeout(() => compareText(), 300);
+            }
         }
 
         window.addEventListener('resize', () => {
             if (document.getElementById('minimap').style.display !== 'none') drawMinimap();
         });
 
-        // ページ離脱時に Worker を確実に terminate する（未完了の計算でも確実に解放）
+        // minimap は fixed（viewport全体）に表示されるため、スクロールしても pane 基準の
+        // マーカー位置は再計算が必要。スロットリング付きで再描画する。
+        let minimapScrollPending = false;
+        window.addEventListener('scroll', () => {
+            if (document.getElementById('minimap').style.display === 'none') return;
+            if (minimapScrollPending) return;
+            minimapScrollPending = true;
+            requestAnimationFrame(() => {
+                minimapScrollPending = false;
+                drawMinimap();
+            });
+        });
+
+        // M5: Worker を一度生成して再利用するため、その Object URL を保持して
+        // ページ離脱時に terminate 後確実に revoke する（URL リークを防止）
+        let workerObjectUrl = null;
+
+        // ページ離脱時に Worker を確実に terminate し、Object URL も解放する
         window.addEventListener('beforeunload', () => {
             if (diffWorker) {
                 diffWorker.terminate();
                 diffWorker = null;
+            }
+            if (workerObjectUrl) {
+                URL.revokeObjectURL(workerObjectUrl);
+                workerObjectUrl = null;
             }
         });
 
@@ -546,6 +683,8 @@
 
                 const leftCell = e.target.closest('.left-cell');
                 const rightCell = e.target.closest('.right-cell');
+                // M3: 新しい結果の描画後はセルキャッシュを再生成する
+                setActive(leftCell || rightCell);
                 if (leftCell) {
                     unifiedResult.classList.add('selecting-left');
                 } else if (rightCell) {
@@ -557,6 +696,34 @@
             // ロックセルに重なると選択範囲が縮んでしまう。
             // セルをまたいで選択が試みられたら、選択の端点をアクティブ側（選択中の側）に
             // 強制して、反対側への選択の拡大・縮小を JS でも防止する。
+            // M3: セルリストは結果描画時だけ1回取得してキャッシュし、
+            // document レベルのリスナーは「ロック中」のときだけ有効化する。
+            let cachedCells = { left: null, right: null };
+            // M3: DOMContentLoaded クロージャの外（compareText の結果描画時）から呼べるよう window に公開する
+            const refreshCellCache = () => {
+                cachedCells.left = Array.from(unifiedResult.querySelectorAll('.left-cell'));
+                cachedCells.right = Array.from(unifiedResult.querySelectorAll('.right-cell'));
+            };
+            window.refreshCellCache = refreshCellCache;
+            const setActive = (el) => {
+                if (!el) return;
+                // innerHTML が置き換わると el が無効になるためキャッシュを再生成
+                if (!unifiedResult.contains(el)) refreshCellCache();
+            };
+
+            const isSelectionWithinActiveSide = (selection, activeCells) => {
+                if (selection.rangeCount === 0) return true;
+                for (const node of [selection.anchorNode, selection.focusNode]) {
+                    if (!node) continue;
+                    let inActive = false;
+                    for (const cell of activeCells) {
+                        if (cell.contains(node)) { inActive = true; break; }
+                    }
+                    if (!inActive) return false;
+                }
+                return true;
+            };
+
             const lockSelectionToActiveSide = (e) => {
                 const isSelectingLeft = unifiedResult.classList.contains('selecting-left');
                 const isSelectingRight = unifiedResult.classList.contains('selecting-right');
@@ -565,9 +732,10 @@
                 const selection = window.getSelection();
                 if (!selection || selection.rangeCount === 0) return;
 
-                const activeCells = isSelectingLeft
-                    ? unifiedResult.querySelectorAll('.left-cell')
-                    : unifiedResult.querySelectorAll('.right-cell');
+                // M3: キャッシュ済みセルを使い、選択が既にアクティブ側内なら早期終了
+                const activeCells = isSelectingLeft ? cachedCells.left : cachedCells.right;
+                if (!activeCells || activeCells.length === 0) return;
+                if (isSelectionWithinActiveSide(selection, activeCells)) return;
 
                 let activeNode = null;
                 for (const cell of activeCells) {
@@ -604,9 +772,10 @@
                     e.preventDefault();
                 }
             };
+
+            // M3: ドラッグ中は unifiedResult 内の mousemove を監視（document レベルは使用しない）
             unifiedResult.addEventListener('mousemove', lockSelectionToActiveSide);
             unifiedResult.addEventListener('mouseup', lockSelectionToActiveSide);
-            document.addEventListener('mousemove', lockSelectionToActiveSide);
 
             // mouseupでクラスを消すのをやめる（ブラウザの勝手な再選択を防ぐ）
             // その代わり、画面のどこかを普通にクリックした時に選択範囲が消えるのと同時にロックも外れるようにする
@@ -626,8 +795,8 @@
                 const diffRow = targetNode.closest('.diff-row');
                 if (diffRow) diffRow.classList.add('active-row');
             };
+            // L2: 行ハイライトは click のみで1回だけ発火させる（mousemove/up 双方では二重に発火していた）
             unifiedResult.addEventListener('click', highlightCorrespondingRow);
-            unifiedResult.addEventListener('mouseup', highlightCorrespondingRow);
         });
     </script>
 </body>
