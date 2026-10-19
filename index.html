@@ -150,7 +150,10 @@
         /* 【重要】反対側を「選択も干渉もできない」状態にするロック */
         .selecting-left .right-cell { user-select: none !important; pointer-events: none; }
         .selecting-right .left-cell { user-select: none !important; pointer-events: none; }
-        
+        /* ロック中のセルはカーソルをnot-allowedにして視覚的に示す（ロックセル自体は pointer-events: none でクリック不可） */
+        .selecting-left .left-cell,
+        .selecting-right .right-cell { cursor: default; }
+
         /* 上に戻るボタン */
         #back-to-top {
             position: fixed;
@@ -211,7 +214,7 @@
             border-radius: 10px;
             margin: 0 20px;
             overflow: hidden;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+            box-shadow: inset 1px 2px rgba(0,0,0,0.1);
         }
         .similarity-bar {
             height: 100%;
@@ -322,6 +325,7 @@
             resultWrapper.style.display = 'flex';
             minimap.style.display = 'none';
 
+            // 差分再計算時は新しい Worker を作成するため、古い Worker を確実に terminate する
             if (diffWorker) diffWorker.terminate();
 
             const workerCode = `
@@ -420,6 +424,8 @@
             const blob = new Blob([workerCode], { type: 'application/javascript' });
             diffWorker = new Worker(URL.createObjectURL(blob));
 
+            // Worker がメッセージを送出した後は不要になるため terminate する
+            // (差分は Worker ごとに1回のみ計算される。結果は postMessage で渡された HTML に含まれる)
             diffWorker.onmessage = function(e) {
                 const finalHtml = e.data.html;
                 const similarity = parseFloat(e.data.similarity);
@@ -443,6 +449,21 @@
                 resultContainer.innerHTML = finalHtml;
                 minimap.style.display = 'block';
                 setTimeout(drawMinimap, 200);
+
+                // 結果の受信が完了したので Worker を terminate する（不要な Worker を放置しない）
+                diffWorker.terminate();
+                diffWorker = null;
+            };
+
+            // エラー時も Worker を破棄して放置しない
+            diffWorker.onerror = function(e) {
+                resultContainer.innerHTML = `
+                    <div style="padding: 50px; text-align: center; width: 100%; color: #c00; font-family: sans-serif;">
+                        <strong>差分の計算に失敗しました: ${e.message || '不明なエラー'}</strong>
+                    </div>
+                `;
+                diffWorker.terminate();
+                diffWorker = null;
             };
 
             diffWorker.postMessage({ textOld, textNew, mode });
@@ -506,6 +527,14 @@
             if (document.getElementById('minimap').style.display !== 'none') drawMinimap();
         });
 
+        // ページ離脱時に Worker を確実に terminate する（未完了の計算でも確実に解放）
+        window.addEventListener('beforeunload', () => {
+            if (diffWorker) {
+                diffWorker.terminate();
+                diffWorker = null;
+            }
+        });
+
         document.addEventListener('DOMContentLoaded', () => {
             const unifiedResult = document.getElementById('unified-result');
             
@@ -523,6 +552,61 @@
                     unifiedResult.classList.add('selecting-right');
                 }
             });
+
+            // 【FIX #1】pointer-events: none だけでは、進行中の選択の終了ドラッグが
+            // ロックセルに重なると選択範囲が縮んでしまう。
+            // セルをまたいで選択が試みられたら、選択の端点をアクティブ側（選択中の側）に
+            // 強制して、反対側への選択の拡大・縮小を JS でも防止する。
+            const lockSelectionToActiveSide = (e) => {
+                const isSelectingLeft = unifiedResult.classList.contains('selecting-left');
+                const isSelectingRight = unifiedResult.classList.contains('selecting-right');
+                if (!isSelectingLeft && !isSelectingRight) return;
+
+                const selection = window.getSelection();
+                if (!selection || selection.rangeCount === 0) return;
+
+                const activeCells = isSelectingLeft
+                    ? unifiedResult.querySelectorAll('.left-cell')
+                    : unifiedResult.querySelectorAll('.right-cell');
+
+                let activeNode = null;
+                for (const cell of activeCells) {
+                    if (cell.contains(selection.anchorNode)) { activeNode = cell; break; }
+                    if (cell.contains(selection.focusNode)) { activeNode = cell; break; }
+                }
+                if (!activeNode) return;
+
+                // anchor と focus が異なるセル（＝反対側）にある場合のみ、
+                // focus をアクティブセル内の最後のテキストノードに固定する。
+                const anchorInActive = activeNode.contains(selection.anchorNode);
+                const focusInActive = activeNode.contains(selection.focusNode);
+                if (anchorInActive === focusInActive) return; // 両方ともアクティブ側なら何もしない
+
+                const range = document.createRange();
+                let lastTextNode = null;
+                const walker = document.createTreeWalker(activeNode, NodeFilter.SHOW_TEXT, null);
+                while (walker.nextNode()) lastTextNode = walker.currentNode;
+
+                if (lastTextNode) {
+                    if (selection.anchorNode === selection.focusNode) {
+                        selection.removeAllRanges();
+                    } else if (anchorInActive) {
+                        // anchor がアクティブ側：focus をアクティブ側末端へ
+                        range.setStart(selection.anchorNode, selection.anchorOffset);
+                        range.setEnd(lastTextNode, lastTextNode.length);
+                    } else {
+                        // focus がアクティブ側：anchor をアクティブ側先頭へ
+                        range.setStart(lastTextNode, 0);
+                        range.setEnd(selection.focusNode, selection.focusOffset);
+                    }
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    e.preventDefault();
+                }
+            };
+            unifiedResult.addEventListener('mousemove', lockSelectionToActiveSide);
+            unifiedResult.addEventListener('mouseup', lockSelectionToActiveSide);
+            document.addEventListener('mousemove', lockSelectionToActiveSide);
 
             // mouseupでクラスを消すのをやめる（ブラウザの勝手な再選択を防ぐ）
             // その代わり、画面のどこかを普通にクリックした時に選択範囲が消えるのと同時にロックも外れるようにする
